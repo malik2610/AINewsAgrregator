@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 from app.runner import run_scrapers
 from app.services.process_anthropic import process_anthropic_markdown
+from app.services.process_generic import process_generic_markdown
 from app.services.process_youtube import process_youtube_transcripts
 from app.services.process_digest import process_digests
 from app.services.process_email import send_digest_email
@@ -52,11 +53,13 @@ def run_daily_pipeline(hours: int = 24, top_n: int = 10) -> dict:
             "youtube": len(scraping_results.get("youtube", [])),
             "openai": len(scraping_results.get("openai", [])),
             "anthropic": len(scraping_results.get("anthropic", [])),
+            "generic": len(scraping_results.get("generic", [])),
         }
         logger.info(
             f"✓ Scraped {results['scraping']['youtube']} YouTube videos, "
             f"{results['scraping']['openai']} OpenAI articles, "
-            f"{results['scraping']['anthropic']} Anthropic articles"
+            f"{results['scraping']['anthropic']} Anthropic articles, "
+            f"{results['scraping']['generic']} generic articles (multi-company)"
         )
 
         logger.info("\n[2/5] Processing Anthropic markdown...")
@@ -65,6 +68,14 @@ def run_daily_pipeline(hours: int = 24, top_n: int = 10) -> dict:
         logger.info(
             f"✓ Processed {anthropic_result['processed']} Anthropic articles "
             f"({anthropic_result['failed']} failed)"
+        )
+
+        logger.info("\n[2b/5] Processing generic articles markdown...")
+        generic_result = process_generic_markdown()
+        results["processing"]["generic"] = generic_result
+        logger.info(
+            f"✓ Processed {generic_result['processed']} generic articles "
+            f"({generic_result['failed']} failed)"
         )
 
         logger.info("\n[3/5] Processing YouTube transcripts...")
@@ -113,7 +124,7 @@ def run_daily_pipeline(hours: int = 24, top_n: int = 10) -> dict:
     logger.info("Pipeline Summary")
     logger.info("=" * 60)
     logger.info(f"Duration: {duration:.1f} seconds")
-    logger.info(f"Scraped: {results['scraping']}")
+    logger.info(f"Scraped: YouTube={results['scraping'].get('youtube',0)}, OpenAI={results['scraping'].get('openai',0)}, Anthropic={results['scraping'].get('anthropic',0)}, Generic={results['scraping'].get('generic',0)}")
     logger.info(f"Processed: {results['processing']}")
     logger.info(f"Digests: {results['digests']}")
     if results.get("email", {}).get("skipped"):

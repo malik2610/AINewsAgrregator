@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from .models import YouTubeVideo, OpenAIArticle, AnthropicArticle, Digest
+from .models import YouTubeVideo, OpenAIArticle, AnthropicArticle, GenericArticle, Digest
 from .connection import get_session
 
 
@@ -255,11 +255,32 @@ class Repository:
                     }
                 )
 
+        generic_articles = (
+            self.session.query(GenericArticle)
+            .filter(GenericArticle.markdown.isnot(None))
+            .all()
+        )
+        for article in generic_articles:
+            key = f"generic:{article.guid}"
+            if key not in seen_ids:
+                articles.append(
+                    {
+                        "type": "generic",
+                        "id": article.guid,
+                        "title": article.title,
+                        "url": article.url,
+                        "content": article.markdown or article.description or "",
+                        "published_at": article.published_at,
+                        "company": article.company,
+                    }
+                )
+
         if limit:
             articles = articles[:limit]
 
         return articles
 
+    
     def create_digest(
         self,
         article_type: str,
@@ -270,16 +291,14 @@ class Repository:
         published_at: Optional[datetime] = None,
     ) -> Optional[Digest]:
         digest_id = f"{article_type}:{article_id}"
+
         existing = self.session.query(Digest).filter_by(id=digest_id).first()
         if existing:
             return None
 
-        if published_at:
-            if published_at.tzinfo is None:
-                published_at = published_at.replace(tzinfo=timezone.utc)
-            created_at = published_at
-        else:
-            created_at = datetime.now(timezone.utc)
+        # Store the actual digest creation time, not the article publication time.
+        # published_at is retained for backward compatibility.
+        created_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         digest = Digest(
             id=digest_id,
@@ -290,15 +309,25 @@ class Repository:
             summary=summary,
             created_at=created_at,
         )
+
         self.session.add(digest)
         self.session.commit()
         return digest
 
+
+        
     def get_recent_digests(
         self, hours: int = 24, exclude_sent: bool = True
     ) -> List[Dict[str, Any]]:
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-        query = self.session.query(Digest).filter(Digest.created_at >= cutoff_time)
+        # Database DateTime columns use naive UTC timestamps.
+        cutoff_time = (
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            - timedelta(hours=hours)
+        )
+
+        query = self.session.query(Digest).filter(
+            Digest.created_at >= cutoff_time
+        )
 
         if exclude_sent:
             query = query.filter(Digest.sent_at.is_(None))
@@ -318,13 +347,45 @@ class Repository:
             }
             for d in digests
         ]
+    def bulk_create_generic_articles(self, articles: List[dict]) -> int:
+        formatted = [
+            {
+                "guid": a["guid"],
+                "title": a["title"],
+                "url": a["url"],
+                "published_at": a["published_at"],
+                "description": a.get("description", ""),
+                "category": a.get("category"),
+                "company": a["company"],
+            }
+            for a in articles
+        ]
+        return self._bulk_create_items(formatted, GenericArticle, "guid", "guid")
+
+    def get_generic_articles_without_markdown(
+        self, limit: Optional[int] = None
+    ) -> List:
+        query = self.session.query(GenericArticle).filter(
+            GenericArticle.markdown.is_(None)
+        )
+        if limit:
+            query = query.limit(limit)
+        return query.all()
+
+    def update_generic_article_markdown(self, guid: str, markdown: str) -> bool:
+        article = self.session.query(GenericArticle).filter_by(guid=guid).first()
+        if article:
+            article.markdown = markdown
+            self.session.commit()
+            return True
+        return False
 
     def mark_digests_as_sent(self, digest_ids: List[str]) -> int:
-        sent_time = datetime.now(timezone.utc)
-        updated = (
-            self.session.query(Digest)
-            .filter(Digest.id.in_(digest_ids))
-            .update({Digest.sent_at: sent_time}, synchronize_session=False)
-        )
-        self.session.commit()
-        return updated
+                sent_time = datetime.now(timezone.utc).replace(tzinfo=None)
+                updated = (
+                    self.session.query(Digest)
+                    .filter(Digest.id.in_(digest_ids))
+                    .update({Digest.sent_at: sent_time}, synchronize_session=False)
+                )
+                self.session.commit()
+                return updated

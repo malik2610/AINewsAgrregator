@@ -1,47 +1,194 @@
+
 import os
-import smtplib
+import base64
+import logging
 import html
+from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
 from dotenv import load_dotenv
 import markdown
 
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google.auth.exceptions import RefreshError
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 MY_EMAIL = os.getenv("MY_EMAIL")
-APP_PASSWORD = os.getenv("APP_PASSWORD")
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+CREDENTIALS_FILE = Path(
+    os.getenv(
+        "GOOGLE_OAUTH_CREDENTIALS_PATH",
+        str(PROJECT_ROOT / "credentials.json")
+    )
+).expanduser()
+
+TOKEN_FILE = Path(
+    os.getenv(
+        "GOOGLE_OAUTH_TOKEN_PATH",
+        str(PROJECT_ROOT / "token.json")
+    )
+).expanduser()
 
 
-def send_email(subject: str, body_text: str, body_html: str = None, recipients: list = None):
+def _get_gmail_service():
+    """Authenticate using Gmail OAuth 2.0 and return Gmail API service."""
+
+    if not CREDENTIALS_FILE.exists():
+        raise FileNotFoundError(
+            f"OAuth credentials file not found: {CREDENTIALS_FILE}"
+        )
+
+    creds = None
+
+    # Load previously saved OAuth credentials.
+    if TOKEN_FILE.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_FILE),
+                SCOPES
+            )
+        except (ValueError, OSError) as exc:
+            logger.warning(
+                "Unable to load OAuth token. Reauthorization required: %s",
+                exc
+            )
+
+    # Refresh expired access token.
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            logger.info("Refreshing Gmail OAuth access token...")
+            creds.refresh(Request())
+
+        except RefreshError as exc:
+            logger.warning(
+                "OAuth refresh failed. Starting authorization again: %s",
+                exc
+            )
+            creds = None
+
+    # First-time authorization or expired/invalid token.
+    if not creds or not creds.valid:
+
+        logger.info("Starting Gmail OAuth authorization...")
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(CREDENTIALS_FILE),
+            SCOPES
+        )
+
+        creds = flow.run_local_server(
+            port=0,
+            access_type="offline",
+            prompt="consent"
+        )
+
+    # Persist refreshed credentials.
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    TOKEN_FILE.write_text(
+        creds.to_json(),
+        encoding="utf-8"
+    )
+
+    logger.info("Gmail OAuth authentication successful.")
+
+    return build(
+        "gmail",
+        "v1",
+        credentials=creds,
+        cache_discovery=False
+    )
+
+
+def send_email(
+    subject: str,
+    body_text: str,
+    body_html: str = None,
+    recipients: list = None
+):
+    """Send plain-text and HTML email using Gmail API."""
+
+    if not MY_EMAIL:
+        raise ValueError(
+            "MY_EMAIL environment variable is not set"
+        )
+
     if recipients is None:
-        if not MY_EMAIL:
-            raise ValueError("MY_EMAIL environment variable is not set")
         recipients = [MY_EMAIL]
-    
-    recipients = [r for r in recipients if r is not None]
+
+    recipients = [
+        recipient.strip()
+        for recipient in recipients
+        if recipient and recipient.strip()
+    ]
+
     if not recipients:
         raise ValueError("No valid recipients provided")
-    
-    if not MY_EMAIL:
-        raise ValueError("MY_EMAIL environment variable is not set")
-    if not APP_PASSWORD:
-        raise ValueError("APP_PASSWORD environment variable is not set")
-    
+
+    # Build multipart email.
     msg = MIMEMultipart("alternative")
+
     msg["Subject"] = subject
     msg["From"] = MY_EMAIL
     msg["To"] = ", ".join(recipients)
-    
-    part1 = MIMEText(body_text, "plain")
-    msg.attach(part1)
-    
+
+    msg.attach(
+        MIMEText(body_text, "plain", "utf-8")
+    )
+
     if body_html:
-        part2 = MIMEText(body_html, "html")
-        msg.attach(part2)
-    
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(MY_EMAIL, APP_PASSWORD)
-        smtp.sendmail(MY_EMAIL, recipients, msg.as_string())
+        msg.attach(
+            MIMEText(body_html, "html", "utf-8")
+        )
+
+    # Gmail API requires base64url-encoded MIME content.
+    raw_message = base64.urlsafe_b64encode(
+        msg.as_bytes()
+    ).decode("utf-8")
+
+    try:
+        logger.info(
+            "Sending email to %s recipient(s)...",
+            len(recipients)
+        )
+
+        service = _get_gmail_service()
+
+        result = (
+            service.users()
+            .messages()
+            .send(
+                userId="me",
+                body={"raw": raw_message}
+            )
+            .execute()
+        )
+
+        logger.info(
+            "Email sent successfully. Message ID: %s",
+            result.get("id")
+        )
+
+        return result
+
+    except HttpError as exc:
+        logger.exception("Gmail API email delivery failed")
+
+        raise RuntimeError(
+            f"Gmail API email delivery failed: {exc}"
+        ) from exc
 
 
 def markdown_to_html(markdown_text: str) -> str:

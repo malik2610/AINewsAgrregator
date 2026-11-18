@@ -1,6 +1,8 @@
 from typing import Optional
 from pydantic import BaseModel
+
 from .base import BaseAgent
+
 
 PROMPT = """You are an expert AI news analyst specializing in summarizing technical articles, research papers, and video content about artificial intelligence.
 
@@ -20,24 +22,35 @@ class DigestOutput(BaseModel):
 
 
 class DigestAgent(BaseAgent):
+
     def __init__(self):
         super().__init__("gpt-4o-mini")
         self.system_prompt = PROMPT
 
-    def generate_digest(self, title: str, content: str, article_type: str) -> Optional[DigestOutput]:
+    def generate_digest(
+        self,
+        title: str,
+        content: str,
+        article_type: str
+    ) -> Optional[DigestOutput]:
+
         try:
-            user_prompt = f"Create a digest for this {article_type}: \n Title: {title} \n Content: {content[:8000]}"
 
-            response = self.client.responses.parse(
-                model=self.model,
-                instructions=self.system_prompt,
-                temperature=0.7,
-                input=user_prompt,
-                text_format=DigestOutput
+            user_prompt = (
+                f"Create a digest for this {article_type}:\n"
+                f"Title: {title}\n"
+                f"Content: {content[:8000]}"
             )
-            
-            return response.output_parsed
-        except Exception as e:
-            print(f"Error generating digest: {e}")
-            return None
 
+            return self.generate_structured_output(
+                system_prompt=self.system_prompt,
+                user_prompt=user_prompt,
+                response_model=DigestOutput,
+                temperature=0.7
+            )
+
+        except Exception as e:
+
+            print(f"Error generating digest: {e}")
+
+            return None

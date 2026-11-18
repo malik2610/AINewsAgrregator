@@ -1,9 +1,13 @@
+import logging
 from typing import List, Callable, Any
 from .config import YOUTUBE_CHANNELS
 from .scrapers.youtube import YouTubeScraper, ChannelVideo
 from .scrapers.openai import OpenAIScraper
 from .scrapers.anthropic import AnthropicScraper
+from .scrapers.generic import GenericScraper
 from .database.repository import Repository
+
+logger = logging.getLogger(__name__)
 
 
 def _save_youtube_videos(
@@ -53,6 +57,27 @@ def _save_rss_articles(
     return articles
 
 
+def _save_generic_articles(
+    scraper: GenericScraper, repo: Repository, hours: int
+) -> List[Any]:
+    articles = scraper.get_articles(hours=hours)
+    if articles:
+        article_dicts = [
+            {
+                "guid": a.guid,
+                "title": a.title,
+                "url": a.url,
+                "published_at": a.published_at,
+                "description": a.description,
+                "category": a.category,
+                "company": a.company,
+            }
+            for a in articles
+        ]
+        repo.bulk_create_generic_articles(article_dicts)
+    return articles
+
+
 SCRAPER_REGISTRY = [
     ("youtube", YouTubeScraper(), _save_youtube_videos),
     (
@@ -65,6 +90,7 @@ SCRAPER_REGISTRY = [
         AnthropicScraper(),
         lambda s, r, h: _save_rss_articles(s, r, h, r.bulk_create_anthropic_articles),
     ),
+    ("generic", GenericScraper(), _save_generic_articles),
 ]
 
 
@@ -73,10 +99,13 @@ def run_scrapers(hours: int = 24) -> dict:
     results = {}
 
     for name, scraper, save_func in SCRAPER_REGISTRY:
+        logger.info(f"  → Scraping [{name}]...")
         try:
             items = save_func(scraper, repo, hours)
             results[name] = items
-        except Exception:
+            logger.info(f"    ✓ [{name}] fetched {len(items)} items")
+        except Exception as e:
+            logger.error(f"    ✗ [{name}] failed: {e}")
             results[name] = []
 
     return results
@@ -87,3 +116,4 @@ if __name__ == "__main__":
     print(f"YouTube videos: {len(results['youtube'])}")
     print(f"OpenAI articles: {len(results['openai'])}")
     print(f"Anthropic articles: {len(results['anthropic'])}")
+    print(f"Generic articles: {len(results['generic'])}")

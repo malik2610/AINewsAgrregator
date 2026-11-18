@@ -97,3 +97,6 @@ app/alembic/versions/*
 playground/*.png
 
 app/google-service-account.json
+
+credentials.json
+token.json
